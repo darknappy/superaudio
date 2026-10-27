@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Flet / PyInstaller / empaquetado
+.flet/
+build/
+dist/
+*.spec.bak
+*.exe
+
+# Artefactos pesados del proyecto
+superaudio.rar
+*.rar
+*.7z
+*.zip
+
+# Salidas de audio y temporales
+output/
+*.m4b
+*.mp3
+*.wav
+*.flac
+*.ogg
+*.aac
+*.part
+*.part.*
+_cover.*
+progress.json
+progress.json.tmp
+revisar.txt
+preview.mp3
+
+# Logs y temporales
+*.log
+*.tmp
+*.bak
+*~
+
+# Editores
+.idea/
+.vscode/

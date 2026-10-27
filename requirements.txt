@@ -1,0 +1,14 @@
+# Dependencias de Superaudio
+# Instala con:
+#   python -m pip install -r requirements.txt
+#
+# ffmpeg y ffprobe son externos y deben estar en el PATH.
+
+supertonic
+numpy
+tqdm
+python-docx
+EbookLib
+beautifulsoup4
+lxml
+flet==0.86.5
