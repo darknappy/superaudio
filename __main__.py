@@ -52,10 +52,14 @@ def _bootstrap():
 
     if os.path.exists(venv) and current.lower() != venv.lower():
         print("🔄 Reiniciando en el entorno de Supertonic …", flush=True)
-        env = os.environ.copy()
-        old_pythonpath = env.get("PYTHONPATH")
-        env["PYTHONPATH"] = root + (os.pathsep + old_pythonpath if old_pythonpath else "")
-        os.execve(venv, [venv, "-m", "superaudio", *sys.argv[1:]], env)
+        old_pythonpath = os.environ.get("PYTHONPATH")
+        os.environ["PYTHONPATH"] = root + (
+            os.pathsep + old_pythonpath if old_pythonpath else ""
+        )
+        os.environ["SUPERAUDIO_ROOT"] = root
+        # os.execv (heredando el entorno) es más fiable que os.execve en
+        # Windows al relanzar un intérprete de un venv con -m.
+        os.execv(venv, [venv, "-m", "superaudio", *sys.argv[1:]])
 
 
 if __name__ == "__main__":
