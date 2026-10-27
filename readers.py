@@ -15,7 +15,7 @@ from ebooklib import epub
 from bs4 import BeautifulSoup
 
 from . import config as C
-from .text import clean
+from .text import clean, configure_book_pronunciation
 
 # ==========================================================
 # TXT
@@ -368,6 +368,9 @@ def load_book(path: str) -> tuple[list, list]:
                      lista de párrafos ya limpios.
     chapter_titles : lista de títulos (strings) del mismo largo.
     """
+    # Diccionario opcional de pronunciación propio de este libro.
+    configure_book_pronunciation(path)
+
     ext = Path(path).suffix.lower()
 
     if ext == ".txt":

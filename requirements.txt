@@ -7,6 +7,7 @@
 supertonic
 numpy
 tqdm
+num2words
 python-docx
 EbookLib
 beautifulsoup4

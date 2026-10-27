@@ -16,6 +16,7 @@ from tqdm import tqdm
 
 from . import config as C
 from . import progress as P
+from . import text as TXT
 from .audio      import build_chapter_wav, build_m4b, build_mp3, build_plain_mp3, normalize_wav
 from .metadata   import book_tags, find_cover, extract_epub_metadata, sanitize_filename
 from .readers    import load_book
@@ -198,7 +199,7 @@ def run(file_path: str,
 
         try:
             init_worker(C.INTRA_OP_THREADS, C.INTER_OP_THREADS, C.VOICE,
-                        C.TOTAL_STEPS, C.MAX_CHUNK_LENGTH, C.LANG)
+                        C.TOTAL_STEPS, C.MAX_CHUNK_LENGTH, C.LANG, C.TTS_MODEL)
             for i, block in enumerate(tqdm(blocks, desc="🎙 Chunks (preview)")):
                 preset = C.STYLE_PRESETS.get(block["style"], C.STYLE_PRESETS["narracion"])
                 _, ok, reason = synthesize_job({
@@ -251,20 +252,41 @@ def run(file_path: str,
     # cambia el audio; si cambia, el progreso viejo se descarta.
     # ----------------------------------------------------------
     fp_params = {
-        "version":      2,
+        "version":      3,
+        "model":        C.TTS_MODEL,
         "voice":        C.VOICE,
         "lang":         C.LANG,
         "speed":        C.SPEED,
         "steps":        C.TOTAL_STEPS,
         "chunk":        C.MAX_CHUNK_LENGTH,
         "sentence_sil": C.SILENCE_BETWEEN_SENTENCES,
+        "styles":       repr(C.STYLE_PRESETS),
+        "style_pauses": repr(C.STYLE_PAUSES_MS),
+        "sentence_gap": C.SENTENCE_GAP_MS,
+        "scene_gap":    C.SILENCE_SCENE_BREAK_MS,
+        "block_gap":    C.SILENCE_BETWEEN_BLOCKS_MS,
         "block":        C.BLOCK_MAX_CHARS,
+        "max_paras":    C.MAX_PARAGRAPHS_PER_BLOCK,
+        "sentence_max": C.SENTENCE_MAX_CHARS,
+        "split_dial":   C.SPLIT_DIALOGUE_BLOCKS,
+        "split_thought": C.SPLIT_THOUGHT_BLOCKS,
+        "abbrev":       C.ENABLE_SPANISH_ABBREVIATIONS,
+        "abbrev_map":   repr(C.SPANISH_ABBREVIATIONS),
+        "numbers":      C.ENABLE_NUMBER_NORMALIZATION,
+        "expressions":  C.ENABLE_EXPRESSION_CUES,
+        "expression_cues": repr(C.EXPRESSION_CUES),
+        "expression_tags": repr(C.EXPRESSION_TAGS),
+        "loudnorm":     (C.LOUDNORM_TARGET_I, C.LOUDNORM_TARGET_TP,
+                         C.LOUDNORM_TARGET_LRA, C.LOUDNORM_TWO_PASS),
+        "edges":        (C.EDGE_FADE_MS, C.TRIM_TTS_EDGES,
+                         C.TRIM_SILENCE_DB, C.TRIM_KEEP_MS),
         "mode":         mode,
         "cpv":          effective_cpv,
         "mp3_only":     mp3_only,
         "calibre":      C.USE_CALIBRE_FOR_EPUB,
         "regex":        repr(C.REGEX_FIXES),
         "pron":         repr(C.PRONUNCIATION_FIXES),
+        "pron_file":    TXT.pronunciation_signature(file_path),
         "marker":       C.CHAPTER_MARKER_REGEX.pattern,
     }
     prog = P.load(out_dir)
@@ -581,14 +603,15 @@ def run(file_path: str,
                 processes  = C.PARALLEL_WORKERS,
                 initializer= init_worker,
                 initargs   = (tpw, C.INTER_OP_THREADS, C.VOICE,
-                              C.TOTAL_STEPS, C.MAX_CHUNK_LENGTH, C.LANG),
+                              C.TOTAL_STEPS, C.MAX_CHUNK_LENGTH, C.LANG,
+                              C.TTS_MODEL),
             ) as pool:
                 for res in tqdm(pool.imap_unordered(synthesize_job, jobs),
                                 total=len(jobs), desc="🎙 Chunks"):
                     _handle(res)
         elif jobs:
             init_worker(C.INTRA_OP_THREADS, C.INTER_OP_THREADS, C.VOICE,
-                        C.TOTAL_STEPS, C.MAX_CHUNK_LENGTH, C.LANG)
+                        C.TOTAL_STEPS, C.MAX_CHUNK_LENGTH, C.LANG, C.TTS_MODEL)
             for job in tqdm(jobs, desc="🎙 Chunks"):
                 try:
                     res = synthesize_job(job)

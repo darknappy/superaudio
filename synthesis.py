@@ -6,6 +6,7 @@ import os
 
 import numpy as np
 from . import config as C
+from .audio import polish_wav
 
 # ----------------------------------------------------------
 # Variables de proceso (inicializadas en _init_worker).
@@ -27,11 +28,13 @@ def _init_worker(intra_threads: int, inter_threads: int,
                   voice: str = None,
                   total_steps: int = None,
                   max_chunk_length: int = None,
-                  lang: str = None):
+                  lang: str = None,
+                  model: str = None):
     """Carga el modelo Supertonic UNA sola vez por proceso worker."""
     global _tts, _voice_style, _total_steps, _max_chunk_length, _lang
     from supertonic import TTS
     _tts = TTS(
+        model=model or C.TTS_MODEL,
         auto_download=True,
         intra_op_num_threads=intra_threads,
         inter_op_num_threads=inter_threads,
@@ -151,6 +154,12 @@ def synthesize_block(text: str, out_file: str,
             if not (os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 1000):
                 last_reason = "el WAV generado está vacío o es demasiado pequeño"
                 continue
+            # Recorte suave de bordes y micro-fade antes de publicar el
+            # bloque. Si falla, el WAV original sigue siendo válido.
+            try:
+                polish_wav(tmp_file)
+            except Exception:
+                pass
             os.replace(tmp_file, out_file)
             return True, reason
 
@@ -203,6 +212,7 @@ def init_worker(intra_threads: int, inter_threads: int,
                  voice: str = None,
                  total_steps: int = None,
                  max_chunk_length: int = None,
-                 lang: str = None):
+                 lang: str = None,
+                 model: str = None):
     _init_worker(intra_threads, inter_threads, voice,
-                 total_steps, max_chunk_length, lang)
+                 total_steps, max_chunk_length, lang, model)

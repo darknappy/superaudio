@@ -258,6 +258,15 @@ def main(page: ft.Page):
         options=[ft.dropdown.Option(v) for v in VALID_VOICES],
     )
 
+    audition_btn = ft.OutlinedButton(
+        "🎤  Probar voces",
+        style=ft.ButtonStyle(
+            side=ft.BorderSide(1, PANEL_BORDER),
+            color=PURPLE,
+            shape=ft.RoundedRectangleBorder(radius=10),
+        ),
+    )
+
     mode_dd = ft.Dropdown(
         label="Salida", value="M4B (capítulos internos)", width=240, dense=True,
         options=[
@@ -394,7 +403,8 @@ def main(page: ft.Page):
                     [
                         ft.Column(
                             [
-                                ft.Row([voice_dd, mode_dd], spacing=12),
+                                ft.Row([voice_dd, mode_dd, audition_btn],
+                                       spacing=12, wrap=True),
                                 ft.Container(height=8),
                                 # Botones centrados en su espacio
                                 ft.Row([generate_btn, stop_btn],
@@ -523,7 +533,9 @@ def main(page: ft.Page):
                         progress_ring.value = min(int(pct_m.group(1)), 100) / 100
 
                     frac_m = _FRAC_RE.search(stripped)
-                    if stripped.startswith("🎙") and frac_m:
+                    if stripped.startswith("🎙 Voces") and frac_m:
+                        status_text.value = f"Voz {frac_m.group(1)}/{frac_m.group(2)}"
+                    elif stripped.startswith("🎙") and frac_m:
                         status_text.value = f"Bloque {frac_m.group(1)}/{frac_m.group(2)}"
                     elif stripped.startswith("🔊"):
                         pct = pct_m.group(1) if pct_m else "…"
@@ -667,6 +679,41 @@ def main(page: ft.Page):
         stop_btn.update()
 
         page.run_thread(run_pipeline, cmd, env)
+
+    def on_audition(e):
+        if state.get("process") is not None:
+            return
+        if not VENV_PY.exists():
+            status_text.value = f"❌ No se encontró el venv de Supertonic: {VENV_PY}"
+            status_text.color = ft.Colors.RED_300
+            status_text.update()
+            return
+        if not RUN_PY.exists():
+            status_text.value = f"❌ No se encontró run.py junto al programa: {RUN_PY}"
+            status_text.color = ft.Colors.RED_300
+            status_text.update()
+            return
+
+        cmd = [
+            str(VENV_PY), str(RUN_PY),
+            "--audition",
+            "--model", str(getattr(C, "TTS_MODEL", "supertonic-3")),
+            "--speed", str(_float_or(speed_field, _defaults["speed"])),
+            "--steps", str(_int_or(steps_field, _defaults["steps"])),
+            "--silence", str(_float_or(silence_field, _defaults["silence"])),
+            "--chunk-chars", str(_int_or(chunk_field, _defaults["chunk_chars"])),
+        ]
+        state["out_dir"] = str(Path(_defaults["output"]) / "_audiciones")
+
+        env = os.environ.copy()
+        if (HERE / "superaudio" / "__init__.py").exists():
+            env["SUPERAUDIO_ROOT"] = str(HERE)
+        elif (HERE / "__init__.py").exists():
+            env["SUPERAUDIO_ROOT"] = str(HERE.parent)
+
+        page.run_thread(run_pipeline, cmd, env)
+
+    audition_btn.on_click = on_audition
 
     # =====================================================
     # Layout General

@@ -2,9 +2,13 @@
 audio.py — Ensamblado de audio: silencios, capítulos WAV,
            MP3 individuales y M4B con capítulos internos.
 """
+import array
+import json
+import math
 import os
 import re
 import subprocess
+import sys
 import wave
 from collections import deque
 from pathlib import Path
@@ -200,22 +204,100 @@ def _wav_duration_ms(wav_path: str) -> int:
 
 
 # ----------------------------------------------------------
-# Normalización
+# Normalización y pulido de audio
 # ----------------------------------------------------------
 
-def normalize_wav(in_wav: str, out_wav: str):
-    """Normaliza el loudness de UN WAV individual (capítulo: minutos,
-    no horas). Se usa para evitar aplicar loudnorm sobre el audio del
-    libro completo de una sola pasada, que es lento (loudnorm corre
-    cerca de tiempo real en ffmpeg)."""
-    tmp = _temp_path(out_wav)
+def _loudnorm_filter() -> str:
+    """Filtro loudnorm con el objetivo configurado para audiolibro."""
+    return (
+        f"loudnorm=I={float(C.LOUDNORM_TARGET_I):g}:"
+        f"TP={float(C.LOUDNORM_TARGET_TP):g}:"
+        f"LRA={float(C.LOUDNORM_TARGET_LRA):g}"
+    )
+
+
+def _measure_loudness(in_wav: str) -> dict | None:
+    """Primera pasada de loudnorm: mide loudness, LRA y true peak."""
+    filter_spec = _loudnorm_filter() + ":print_format=json"
     try:
+        proc = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-nostats", "-loglevel", "info",
+                "-i", in_wav, "-af", filter_spec, "-f", "null", "-",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError:
+        return None
+
+    if proc.returncode != 0:
+        return None
+    raw = proc.stderr or ""
+    start, end = raw.rfind("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(raw[start:end + 1])
+        # Los valores no finitos no sirven para la segunda pasada.
+        values = [
+            float(data[key])
+            for key in ("input_i", "input_tp", "input_lra",
+                        "input_thresh", "target_offset")
+        ]
+        if not all(math.isfinite(value) for value in values):
+            return None
+        return data
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def normalize_wav(in_wav: str, out_wav: str):
+    """Normaliza el loudness de UN WAV de capítulo.
+
+    Por defecto hace dos pasadas: medir y aplicar. Así el nivel queda
+    más estable entre capítulos y se evita que loudnorm «bombe» el
+    volumen. Si la medición falla, cae a una única pasada.
+    """
+    tmp = _temp_path(out_wav)
+    filter_spec = _loudnorm_filter()
+
+    if getattr(C, "LOUDNORM_TWO_PASS", True):
+        measured = _measure_loudness(in_wav)
+        if measured:
+            try:
+                filter_spec = (
+                    _loudnorm_filter()
+                    + f":measured_I={measured['input_i']}"
+                    + f":measured_LRA={measured['input_lra']}"
+                    + f":measured_TP={measured['input_tp']}"
+                    + f":measured_thresh={measured['input_thresh']}"
+                    + f":offset={measured['target_offset']}"
+                    + ":linear=true:print_format=summary"
+                )
+            except (KeyError, TypeError):
+                filter_spec = _loudnorm_filter()
+
+    def _run(filter_value: str):
         _run_ffmpeg([
             "ffmpeg", "-y", "-i", in_wav,
-            "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+            "-af", filter_value,
             "-c:a", "pcm_s16le", "-ar", "44100", "-ac", "1",
             tmp,
         ])
+
+    try:
+        try:
+            _run(filter_spec)
+        except RuntimeError:
+            # La segunda pasada puede fallar con audios muy cortos o
+            # con un LRA incompatible; una pasada normal es suficiente.
+            if filter_spec != _loudnorm_filter():
+                _run(_loudnorm_filter())
+            else:
+                raise
         _commit_temp(tmp, out_wav)
     except Exception:
         try:
@@ -224,6 +306,87 @@ def normalize_wav(in_wav: str, out_wav: str):
         except OSError:
             pass
         raise
+
+
+def polish_wav(path: str, trim: bool = None, fade_ms: int = None) -> bool:
+    """Recorta silencio inicial/final y aplica un micro-fade.
+
+    Se hace sobre cada bloque TTS, no sobre el capítulo entero. El
+    objetivo es quitar clics en las uniones sin tocar las pausas
+    internas. Solo procesa WAV PCM de 16 bits.
+    """
+    if trim is None:
+        trim = getattr(C, "TRIM_TTS_EDGES", True)
+    if fade_ms is None:
+        fade_ms = int(getattr(C, "EDGE_FADE_MS", 8))
+
+    try:
+        with wave.open(path, "rb") as wf:
+            channels = wf.getnchannels()
+            width = wf.getsampwidth()
+            rate = wf.getframerate()
+            frames = wf.getnframes()
+            raw = wf.readframes(frames)
+        if width != 2 or channels < 1 or frames <= 1:
+            return False
+
+        samples = array.array("h")
+        samples.frombytes(raw)
+        if sys.byteorder != "little":
+            samples.byteswap()
+        if not samples:
+            return False
+
+        total = len(samples)
+        start, end = 0, total
+        if trim:
+            threshold = int(32767 * (10 ** (float(C.TRIM_SILENCE_DB) / 20.0)))
+            first = next(
+                (i for i, sample in enumerate(samples) if abs(sample) > threshold),
+                None,
+            )
+            if first is not None:
+                last = next(
+                    (i for i in range(total - 1, -1, -1)
+                     if abs(samples[i]) > threshold),
+                    first,
+                )
+                margin = int(rate * float(C.TRIM_KEEP_MS) / 1000.0)
+                start = max(0, first - margin)
+                end = min(total, last + margin + 1)
+
+        if end <= start:
+            return False
+
+        fade = max(0, int(rate * max(0, fade_ms) / 1000.0))
+        if fade > 0:
+            limit = min(fade, end - start)
+            for i in range(limit):
+                factor = i / fade
+                samples[start + i] = int(samples[start + i] * factor)
+                samples[end - 1 - i] = int(samples[end - 1 - i] * factor)
+
+        trimmed = samples[start:end]
+        if sys.byteorder != "little":
+            trimmed.byteswap()
+
+        tmp = path + ".polish.wav"
+        try:
+            with wave.open(tmp, "wb") as wf:
+                wf.setnchannels(channels)
+                wf.setsampwidth(width)
+                wf.setframerate(rate)
+                wf.writeframes(trimmed.tobytes())
+            os.replace(tmp, path)
+        finally:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+        return True
+    except (OSError, wave.Error, ValueError):
+        return False
 
 
 # ----------------------------------------------------------
@@ -316,7 +479,7 @@ def build_mp3(in_wav: str, out_mp3: str,
     _add_cover_args(cmd, cover_path)
 
     if normalize:
-        cmd += ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"]
+        cmd += ["-af", _loudnorm_filter()]
     cmd += [
         "-acodec", "libmp3lame",
         "-b:a", getattr(C, "MP3_BITRATE", "192k"),

@@ -72,6 +72,7 @@ from .pipeline import MODE_BOOK, MODE_SPLIT, MODE_VOLUME, run
 from . import config as C
 
 VALID_VOICES = [f"{g}{n}" for g in ("F", "M") for n in range(1, 6)]  # F1-F5, M1-M5
+VALID_MODELS = ("supertonic", "supertonic-2", "supertonic-3")
 
 _HELP = """
 Uso:
@@ -84,8 +85,10 @@ Uso:
   superaudio libro.epub --voice M2             → usa la voz M2 sin preguntar (salta el prompt)
   superaudio libro.epub -10 --mp3              → MP3 plano cada 10 capítulos (sin capítulos internos)
   superaudio libro.epub --mp3                  → 1 solo MP3 plano de todo el libro (en vez de M4B)
-  superaudio libro.epub --steps 6 --speed 1.1  → ajusta calidad/velocidad para esta corrida
+  superaudio libro.epub --steps 6 --speed 1.05 → ajusta calidad/velocidad para esta corrida
   superaudio libro.epub --force                → borra las salidas de ESTE libro y regenera todo
+  superaudio --audition                        → compara las 10 voces con el mismo texto
+  superaudio --benchmark                       → genera el banco de pruebas de prosodia
 
 Opciones:
   --chapters                 Genera 1 MP3 por capítulo en vez de 1 M4B.
@@ -93,12 +96,21 @@ Opciones:
   --mp3 / -mp3               Modo book/volumen sale en MP3 plano en vez de M4B.
   --preview N                Genera solo los primeros N bloques, para probar rápido.
   --voice VOZ                Usa la voz indicada (F1-F5, M1-M5) sin preguntar por consola.
+  --model NOMBRE             Modelo Supertonic (supertonic-3 por defecto).
   --speed X                  Velocidad de narración base (0.5-2.0). Default: config.py.
   --steps N                  Calidad de síntesis Supertonic (5=rápida, 12=máxima). Default: config.py.
   --silence X                Pausa entre oraciones en segundos. Default: config.py.
   --chunk-chars N            Límite interno de troceo de Supertonic. Default: config.py.
   --block-chars N            Tamaño máximo de bloque propio. Default: config.py.
   --workers N                Procesos de síntesis en paralelo. Default: config.py.
+  --no-numbers               No convertir números/fechas/unidades a palabras.
+  --no-expressions           No convertir [ríe]/[suspira] en tags de expresión.
+  --audition                 Genera muestras comparativas de voces (no requiere libro).
+  --audition-voices F1,M1    Voces concretas para la audición (coma).
+  --audition-out RUTA        Carpeta de salida de la audición.
+  --audition-text TEXTO      Texto alternativo para la audición.
+  --benchmark                Genera el banco de pruebas de prosodia.
+  --benchmark-out RUTA       Carpeta del banco de pruebas.
   --force                    Borra salidas/progreso de este libro y vuelve a generar.
   -h / --help                Muestra esta ayuda.
 
@@ -192,6 +204,68 @@ def main(argv=None) -> int:
             mp3_only = True
             args.remove(flag)
 
+    # Herramientas que no necesitan un libro.
+    audition = "--audition" in args
+    if audition:
+        args.remove("--audition")
+    benchmark = "--benchmark" in args
+    if benchmark:
+        args.remove("--benchmark")
+    if audition and benchmark:
+        print("❌ Usa --audition o --benchmark, no ambos a la vez.")
+        return 2
+
+    audition_voices = None
+    audition_out = None
+    audition_text = None
+    benchmark_out = None
+    for flag, attr in (
+        ("--audition-voices", "audition_voices"),
+        ("--audition-out", "audition_out"),
+        ("--audition-text", "audition_text"),
+        ("--benchmark-out", "benchmark_out"),
+    ):
+        if flag not in args:
+            continue
+        i = args.index(flag)
+        if i + 1 >= len(args):
+            print(f"❌ {flag} requiere un valor.")
+            return 2
+        value = args[i + 1]
+        args = args[:i] + args[i + 2:]
+        if attr == "audition_voices":
+            audition_voices = [
+                v.strip().upper() for v in value.split(",") if v.strip()
+            ]
+        elif attr == "audition_out":
+            audition_out = value
+        elif attr == "audition_text":
+            audition_text = value
+        else:
+            benchmark_out = value
+
+    # --model
+    if "--model" in args:
+        i = args.index("--model")
+        if i + 1 >= len(args):
+            print("❌ --model requiere un nombre de modelo.")
+            return 2
+        model_arg = args[i + 1].strip()
+        args = args[:i] + args[i + 2:]
+        if model_arg not in VALID_MODELS:
+            print(f"❌ Modelo inválido: '{model_arg}'.")
+            print(f"   Opciones: {', '.join(VALID_MODELS)}")
+            return 2
+        C.TTS_MODEL = model_arg
+
+    # Interruptores de normalización.
+    if "--no-numbers" in args:
+        C.ENABLE_NUMBER_NORMALIZATION = False
+        args.remove("--no-numbers")
+    if "--no-expressions" in args:
+        C.ENABLE_EXPRESSION_CUES = False
+        args.remove("--no-expressions")
+
     # --speed / --steps / --silence / --chunk-chars / --block-chars / --workers
     _numeric_flags = {
         "--speed":       ("SPEED", float),
@@ -220,8 +294,8 @@ def main(argv=None) -> int:
     if not math.isfinite(C.SPEED) or not (0.5 <= C.SPEED <= 2.0):
         print("❌ --speed debe estar entre 0.5 y 2.0.")
         return 2
-    if C.TOTAL_STEPS < 1:
-        print("❌ --steps debe ser un entero positivo.")
+    if not (1 <= C.TOTAL_STEPS <= 12):
+        print("❌ --steps debe estar entre 1 y 12 (máximo oficial).")
         return 2
     if (not math.isfinite(C.SILENCE_BETWEEN_SENTENCES)
             or C.SILENCE_BETWEEN_SENTENCES < 0):
@@ -249,6 +323,44 @@ def main(argv=None) -> int:
             return 2
         voice_arg = args[i + 1].strip().upper()
         args = args[:i] + args[i + 2:]
+
+    if voice_arg and voice_arg not in VALID_VOICES and (audition or benchmark):
+        print(f"❌ Voz inválida: '{voice_arg}'. Opciones: {', '.join(VALID_VOICES)}")
+        return 2
+
+    # ----------------------------------------------------------
+    # Herramientas sin libro
+    # ----------------------------------------------------------
+    if audition:
+        if audition_voices is None and voice_arg:
+            audition_voices = [voice_arg]
+        from .audition import run_audition
+        ok = run_audition(
+            voices=audition_voices,
+            out_dir=audition_out,
+            text=audition_text,
+            speed=C.SPEED,
+            steps=C.TOTAL_STEPS,
+            model=C.TTS_MODEL,
+            lang=C.LANG,
+            max_chunk_length=C.MAX_CHUNK_LENGTH,
+            silence_duration=C.SILENCE_BETWEEN_SENTENCES,
+        )
+        return 0 if ok else 1
+
+    if benchmark:
+        from .quality import run_benchmark
+        ok = run_benchmark(
+            out_dir=benchmark_out,
+            voice=voice_arg or C.VOICE,
+            model=C.TTS_MODEL,
+            speed=C.SPEED,
+            steps=C.TOTAL_STEPS,
+            lang=C.LANG,
+            max_chunk_length=C.MAX_CHUNK_LENGTH,
+            silence_duration=C.SILENCE_BETWEEN_SENTENCES,
+        )
+        return 0 if ok else 1
 
     # Archivo de entrada
     arg = " ".join(args).strip().strip('"')
